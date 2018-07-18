@@ -1,9 +1,6 @@
 package hudson.plugins.findbugs.parser; // NOPMD
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -16,6 +13,8 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
 
+import edu.umd.cs.findbugs.*;
+import edu.umd.cs.findbugs.ba.SignatureParser;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.StringUtils;
 import org.dom4j.DocumentException;
@@ -24,11 +23,6 @@ import org.xml.sax.SAXException;
 
 import com.google.common.collect.Sets;
 
-import edu.umd.cs.findbugs.BugAnnotation;
-import edu.umd.cs.findbugs.BugInstance;
-import edu.umd.cs.findbugs.Project;
-import edu.umd.cs.findbugs.SortedBugCollection;
-import edu.umd.cs.findbugs.SourceLineAnnotation;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import edu.umd.cs.findbugs.ba.SourceFile;
 import edu.umd.cs.findbugs.ba.SourceFinder;
@@ -287,13 +281,30 @@ public class FindBugsParser implements AnnotationParser {
             if (category == null) { // alternately, only if warning.getBugPattern().getType().equals("UNKNOWN")
                 category = warning.getBugPattern().getCategory();
             }
+
+            int startLine = sourceLine.getStartLine();
+            int endLine = sourceLine.getEndLine();
+            String javaFilePath = findSourceFile(project, sourceFinder, sourceLine);
+
+            if(startLine == -1 || endLine == -1 || codeIsDecompiled(javaFilePath)) {
+                MethodAnnotation methodAnnotation = warning.getPrimaryMethod();
+                ClassAnnotation classAnnotation = warning.getPrimaryClass();
+
+                if(methodAnnotation != null && classAnnotation != null) {
+                    startLine = findMethodLineNumber(javaFilePath, methodAnnotation.getMethodSignature(), methodAnnotation.getMethodName(), classAnnotation.getClassName());
+                    endLine = startLine;
+                }
+            }
+
             Bug bug = new Bug(getPriority(warning), StringUtils.defaultIfEmpty(
                     hashToMessageMapping.get(warning.getInstanceHash()), message), category, type,
-                    sourceLine.getStartLine(), sourceLine.getEndLine());
+                    startLine, endLine);
+
             bug.setInstanceHash(warning.getInstanceHash());
             bug.setRank(warning.getBugRank());
 
             boolean ignore = setCloudInformation(collection, warning, bug);
+
             if (!ignore) {
                 bug.setNotAProblem(false);
                 bug.setFileName(findSourceFile(project, sourceFinder, sourceLine));
@@ -308,6 +319,134 @@ public class FindBugsParser implements AnnotationParser {
         }
 
         return applyFilters(annotations);
+    }
+
+    private static boolean codeIsDecompiled(String javaFilePath) {
+        File file;
+        BufferedReader reader = null;
+        try {
+            file = new File(javaFilePath);
+            reader = new BufferedReader(new FileReader(file));
+            String header = StringUtils.defaultIfEmpty(reader.readLine(), "") + StringUtils.defaultIfEmpty(reader.readLine(), "");
+
+            return header.matches(".*Decompiled with CFR.*");
+        } catch(Exception e) {
+        } finally {
+            try {
+                reader.close();
+            } catch(Exception e) {}
+        }
+
+        return false;
+    }
+
+    private static String transformTypeSignatureIntoTypePattern(String t) {
+        char c = t.charAt(0);
+
+        switch(c) {
+            case 'L':
+                return extractBaseClassName(t);
+
+            case 'V':
+                return "void";
+
+            case '[':
+                return transformTypeSignatureIntoTypePattern(t.substring(1));
+
+            case 'B':
+                return "byte";
+
+            case 'C':
+                return "char";
+
+            case 'S':
+                return "short";
+
+            case 'I':
+                return "int";
+
+            case 'J':
+                return "long";
+
+            case 'F':
+                return "float";
+
+            case 'D':
+                return "double";
+        }
+
+        return "";
+    }
+
+    private static String extractBaseClassName(String t) {
+        String o = StringUtils.substringAfterLast(t, "/").replaceAll(";", "");
+
+        // Extract the name of the class if it is located inside another
+        if(o.indexOf('$') != -1) {
+            o = StringUtils.substringAfterLast(o, "$");
+        }
+
+        return o;
+    }
+
+    private static String buildMethodPattern(String methodSignature, String methodName, String className) {
+        SignatureParser sigParser = new SignatureParser(methodSignature);
+
+        StringBuilder sb = new StringBuilder(".*");
+
+        if(methodName.equals("<init>")) {
+            methodName = className;
+
+            if(methodName.indexOf(".") != -1) {
+                methodName = StringUtils.substringAfterLast(className, ".");
+            }
+        } else {
+            sb.append(transformTypeSignatureIntoTypePattern(sigParser.getReturnTypeSignature()));
+            sb.append(" ");
+        }
+
+        sb.append(methodName);
+
+        for(String arg : sigParser.getArguments()) {
+            sb.append(".*");
+            sb.append(transformTypeSignatureIntoTypePattern(arg));
+        }
+
+        sb.append(".*");
+
+        return sb.toString();
+    }
+
+    private static int findMethodLineNumber(String javaFilePath, String methodSignature, String methodName, String className) {
+        File file;
+        BufferedReader reader = null;
+        String line;
+        int lineNumber = 1;
+        String patternString;
+        Pattern pattern;
+
+        patternString = buildMethodPattern(methodSignature, methodName, className);
+        pattern = Pattern.compile(patternString);
+
+        try {
+            file = new File(javaFilePath);
+            reader = new BufferedReader(new FileReader(file));
+
+            while((line = reader.readLine()) != null) {
+                if(pattern.matcher(line).matches()) {
+                    return lineNumber;
+                }
+
+                lineNumber++;
+            }
+        } catch(Exception e) {
+        } finally {
+            try {
+                reader.close();
+            } catch(Exception e) {}
+        }
+
+        return -1;
     }
 
 
