@@ -284,6 +284,7 @@ public class FindBugsParser implements AnnotationParser {
 
             int startLine = sourceLine.getStartLine();
             int endLine = sourceLine.getEndLine();
+            boolean addAnnotations = true;
             String javaFilePath = findSourceFile(project, sourceFinder, sourceLine);
 
             if(startLine == -1 || endLine == -1 || codeIsDecompiled(javaFilePath)) {
@@ -294,6 +295,8 @@ public class FindBugsParser implements AnnotationParser {
                     startLine = findMethodLineNumber(javaFilePath, methodAnnotation.getMethodSignature(), methodAnnotation.getMethodName(), classAnnotation.getClassName());
                     endLine = startLine;
                 }
+
+                addAnnotations = false;
             }
 
             Bug bug = new Bug(getPriority(warning), StringUtils.defaultIfEmpty(
@@ -310,7 +313,10 @@ public class FindBugsParser implements AnnotationParser {
                 bug.setFileName(findSourceFile(project, sourceFinder, sourceLine));
                 bug.setPackageName(warning.getPrimaryClass().getPackageName());
                 bug.setModuleName(actualName);
-                setAffectedLines(warning, bug);
+
+                if(addAnnotations) {
+                    setAffectedLines(warning, bug);
+                }
 
                 annotations.add(bug);
                 bug.intern(stringPool);
