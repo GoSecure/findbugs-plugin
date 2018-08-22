@@ -294,6 +294,9 @@ public class FindBugsParser implements AnnotationParser {
                 if(methodAnnotation != null && classAnnotation != null) {
                     startLine = findMethodLineNumber(javaFilePath, methodAnnotation.getMethodSignature(), methodAnnotation.getMethodName(), classAnnotation.getClassName());
                     endLine = startLine;
+                } else {
+                    startLine = -1;
+                    endLine = -1;
                 }
 
                 addAnnotations = false;
